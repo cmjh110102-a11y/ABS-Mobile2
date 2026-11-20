@@ -2,6 +2,8 @@ package com.absmobile.app;
 
 import android.Manifest;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.graphics.RectF;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
@@ -9,11 +11,10 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import android.graphics.Color;
-import android.graphics.Typeface;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
@@ -22,202 +23,140 @@ import androidx.core.content.ContextCompat;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
-public class MainActivity extends AppCompatActivity {
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class MainActivity extends AppCompatActivity implements BaseballPitchAnalyzer.Listener {
     private static final int CAMERA_PERMISSION = 7;
     private PreviewView previewView;
     private ZoneOverlay zoneOverlay;
-    private TextView decision, status;
+    private TextView decision, status, counts, confidence;
+    private Button startButton;
     private boolean tracking = false;
-    private int ballCount = 0, strikeCount = 0, outs = 0;
+    private int balls=0, strikes=0, outs=0;
+    private ExecutorService cameraExecutor;
+    private BaseballPitchAnalyzer pitchAnalyzer;
 
-    @Override
-    public void onCreate(Bundle savedInstanceState) {
+    @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_FULLSCREEN
-                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        cameraExecutor = Executors.newSingleThreadExecutor();
         buildUi();
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-                == PackageManager.PERMISSION_GRANTED) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startCamera();
         } else {
-            ActivityCompat.requestPermissions(this,
-                    new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
         }
     }
 
     private void buildUi() {
         FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.rgb(4, 10, 17));
-
+        root.setBackgroundColor(Color.rgb(4,10,17));
         previewView = new PreviewView(this);
         previewView.setScaleType(PreviewView.ScaleType.FILL_CENTER);
-        root.addView(previewView, new FrameLayout.LayoutParams(-1, -1));
-
+        root.addView(previewView, new FrameLayout.LayoutParams(-1,-1));
         zoneOverlay = new ZoneOverlay(this);
-        root.addView(zoneOverlay, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(zoneOverlay, new FrameLayout.LayoutParams(-1,-1));
 
         LinearLayout top = new LinearLayout(this);
-        top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        top.setPadding(dp(20), dp(12), dp(20), dp(12));
-        top.setBackgroundColor(0xCC07121E);
-        top.addView(text("ABS  /  MOBILE", 20, 0xFF42F5A7, true));
-        top.addView(text("  ● CAMERA LIVE", 13, 0xFFFF4E61, true));
-        root.addView(top, new FrameLayout.LayoutParams(-1, dp(54), Gravity.TOP));
+        top.setOrientation(LinearLayout.HORIZONTAL); top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(18),dp(8),dp(18),dp(8)); top.setBackgroundColor(0xD907121E);
+        TextView brand=text("ABS / MOBILE 0.3",20,0xFF42F5A7,true); top.addView(brand,new LinearLayout.LayoutParams(0,dp(42),1));
+        top.addView(text("EXPERIMENTAL AUTO CALL",12,0xFFFFD166,true));
+        root.addView(top,new FrameLayout.LayoutParams(-1,dp(58),Gravity.TOP));
 
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(16), dp(12), dp(16), dp(12));
-        panel.setBackgroundColor(0xDD07121E);
+        LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(14),dp(8),dp(14),dp(8)); panel.setBackgroundColor(0xE807121E);
+        decision=text("READY",27,0xFF42F5A7,true); decision.setGravity(Gravity.CENTER);
+        panel.addView(decision,new LinearLayout.LayoutParams(-1,dp(38)));
+        status=text("Camera starting · Auto FPS · Balanced AI",12,0xFFB7C8D8,false); status.setGravity(Gravity.CENTER);
+        panel.addView(status,new LinearLayout.LayoutParams(-1,dp(24)));
+        counts=text("BALL  0       STRIKE  0       OUT  0",16,Color.WHITE,true); counts.setGravity(Gravity.CENTER);
+        panel.addView(counts,new LinearLayout.LayoutParams(-1,dp(30)));
+        confidence=text("AI: waiting for moving ball candidate",11,0xFF9EB2C5,false); confidence.setGravity(Gravity.CENTER);
+        panel.addView(confidence,new LinearLayout.LayoutParams(-1,dp(22)));
 
-        decision = text("READY", 28, 0xFF42F5A7, true);
-        decision.setGravity(Gravity.CENTER);
-        panel.addView(decision);
-
-        status = text("Zone setup  ·  drag the green zone to position",
-                12, 0xFFB7C8D8, false);
-        status.setGravity(Gravity.CENTER);
-        panel.addView(status);
-
-        LinearLayout counts = new LinearLayout(this);
-        counts.setGravity(Gravity.CENTER);
-        counts.setPadding(0, dp(8), 0, dp(8));
-        counts.addView(text("BALL  " + ballCount
-                + "     STRIKE  " + strikeCount
-                + "     OUT  " + outs, 16, Color.WHITE, true));
-        panel.addView(counts);
-
-        LinearLayout buttons = new LinearLayout(this);
-        buttons.setGravity(Gravity.CENTER);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-
-        Button start = button("START TRACK", 0xFF0D5B3A);
-        Button calibrate = button("ZONE CAL", 0xFF16405D);
-        Button ball = button("BALL", 0xFF7E2732);
-        Button strike = button("STRIKE", 0xFF176447);
-        Button reset = button("RESET", 0xFF474F56);
-
-        start.setOnClickListener(v -> {
-            tracking = !tracking;
-            start.setText(tracking ? "STOP TRACK" : "START TRACK");
-            status.setText(tracking
-                    ? "Tracking mode ON · AI detector not installed in prototype"
-                    : "Tracking mode OFF");
-        });
-
-        calibrate.setOnClickListener(v -> {
-            zoneOverlay.setCalibration(!zoneOverlay.calibration);
-            status.setText(zoneOverlay.calibration
-                    ? "Calibration ON · drag zone to adjust"
-                    : "Calibration OFF");
-        });
-
-        ball.setOnClickListener(v -> {
-            ballCount++;
-            if (ballCount >= 4) {
-                ballCount = 0;
-                strikeCount = 0;
-            }
-            updateCount();
-            showDecision("BALL", 0xFFFF6874);
-        });
-
-        strike.setOnClickListener(v -> {
-            strikeCount++;
-            if (strikeCount >= 3) {
-                strikeCount = 0;
-                ballCount = 0;
-                outs = Math.min(3, outs + 1);
-            }
-            updateCount();
-            showDecision("STRIKE", 0xFF42F5A7);
-        });
-
-        reset.setOnClickListener(v -> {
-            ballCount = 0;
-            strikeCount = 0;
-            outs = 0;
-            updateCount();
-            decision.setText("READY");
-            decision.setTextColor(0xFF42F5A7);
-        });
-
-        for (Button b : new Button[]{start, calibrate, ball, strike, reset}) {
-            buttons.addView(b);
-        }
+        LinearLayout buttons=new LinearLayout(this); buttons.setGravity(Gravity.CENTER);
+        startButton=button("START AUTO",0xFF0D5B3A); Button calibrate=button("ZONE CAL",0xFF16405D);
+        Button reset=button("RESET",0xFF474F56); Button manualBall=button("BALL +",0xFF7E2732); Button manualStrike=button("STRIKE +",0xFF176447);
+        startButton.setOnClickListener(v->{ tracking=!tracking; if(pitchAnalyzer!=null)pitchAnalyzer.setEnabled(tracking);
+            startButton.setText(tracking?"STOP AUTO":"START AUTO"); status.setText(tracking?"Auto tracking active · experimental 2-D detector":"Auto tracking paused"); });
+        calibrate.setOnClickListener(v->{ zoneOverlay.setCalibration(!zoneOverlay.calibration);
+            status.setText(zoneOverlay.calibration?"Calibration ON · drag strike zone":"Calibration OFF"); });
+        reset.setOnClickListener(v->{balls=0;strikes=0;outs=0;updateCounts();decision.setText("READY");decision.setTextColor(0xFF42F5A7);});
+        manualBall.setOnClickListener(v->applyDecision(false,1f,"Manual operator input"));
+        manualStrike.setOnClickListener(v->applyDecision(true,1f,"Manual operator input"));
+        for(Button b:new Button[]{startButton,calibrate,reset,manualBall,manualStrike}) buttons.addView(b);
         panel.addView(buttons);
-
-        root.addView(panel, new FrameLayout.LayoutParams(-1, dp(170), Gravity.BOTTOM));
+        root.addView(panel,new FrameLayout.LayoutParams(-1,dp(166),Gravity.BOTTOM));
         setContentView(root);
     }
 
-    private void updateCount() {
-        status.setText("B " + ballCount + "  /  S " + strikeCount + "  /  O " + outs);
-    }
-
-    private void showDecision(String s, int c) {
-        decision.setText(s);
-        decision.setTextColor(c);
-    }
-
-    private Button button(String label, int color) {
-        Button b = new Button(this);
-        b.setText(label);
-        b.setTextColor(Color.WHITE);
-        b.setTextSize(12);
-        b.setAllCaps(false);
-        b.setBackgroundColor(color);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(74), dp(44));
-        p.setMargins(dp(4), 0, dp(4), 0);
-        b.setLayoutParams(p);
-        return b;
-    }
-
-    private TextView text(String s, int size, int color, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(s);
-        t.setTextSize(size);
-        t.setTextColor(color);
-        if (bold) {
-            t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        }
-        return t;
-    }
-
-    private int dp(int n) {
-        return (int) (n * getResources().getDisplayMetrics().density);
-    }
-
     private void startCamera() {
-        ListenableFuture<ProcessCameraProvider> providerFuture =
-                ProcessCameraProvider.getInstance(this);
-
-        providerFuture.addListener(() -> {
+        ListenableFuture<ProcessCameraProvider> future=ProcessCameraProvider.getInstance(this);
+        future.addListener(()->{
             try {
-                ProcessCameraProvider provider = providerFuture.get();
-                Preview preview = new Preview.Builder().build();
-                preview.setSurfaceProvider(previewView.getSurfaceProvider());
+                ProcessCameraProvider provider=future.get();
+                Preview preview=new Preview.Builder().build(); preview.setSurfaceProvider(previewView.getSurfaceProvider());
+                ImageAnalysis analysis=new ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .setTargetResolution(new android.util.Size(640,360)).build();
+                pitchAnalyzer=new BaseballPitchAnalyzer(this,true);
+                pitchAnalyzer.setEnabled(tracking);
+                analysis.setAnalyzer(cameraExecutor,pitchAnalyzer);
                 provider.unbindAll();
-                provider.bindToLifecycle(this,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview);
-            } catch (Exception e) {
-                status.setText("Camera error: " + e.getMessage());
-            }
-        }, ContextCompat.getMainExecutor(this));
+                provider.bindToLifecycle(this,CameraSelector.DEFAULT_BACK_CAMERA,preview,analysis);
+                status.setText("Camera live · ImageAnalysis 640×360 · Auto FPS · Balanced");
+            } catch(Exception e) { status.setText("Camera error: "+e.getMessage()); }
+        },ContextCompat.getMainExecutor(this));
     }
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions,
-                                           int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == CAMERA_PERMISSION
-                && grantResults.length > 0
-                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            startCamera();
+    @Override public RectF zone() {
+        RectF r = zoneOverlay.getZoneNormalized();
+        // PreviewView uses FILL_CENTER. Map the screen-space overlay rectangle
+        // back into the 16:9 ImageAnalysis frame coordinates.
+        int vw = Math.max(1, zoneOverlay.getWidth());
+        int vh = Math.max(1, zoneOverlay.getHeight());
+        float viewAspect = vw / (float) vh;
+        float imageAspect = 16f / 9f;
+        if (viewAspect > imageAspect) {
+            float crop = (1f - imageAspect / viewAspect) * 0.5f;
+            r.top = crop + r.top * (1f - 2f * crop);
+            r.bottom = crop + r.bottom * (1f - 2f * crop);
+        } else if (viewAspect < imageAspect) {
+            float crop = (1f - viewAspect / imageAspect) * 0.5f;
+            r.left = crop + r.left * (1f - 2f * crop);
+            r.right = crop + r.right * (1f - 2f * crop);
         }
+        return r;
     }
+    @Override public void onTracking(String message,float x,float y,float conf) {
+        runOnUiThread(()->confidence.setText(String.format(java.util.Locale.US,"%s · x %.3f y %.3f · score %.0f%%",message,x,y,conf*100f)));
+    }
+    @Override public void onDecision(boolean strike,float conf,String reason) {
+        runOnUiThread(()->applyDecision(strike,conf,reason));
+    }
+    private void applyDecision(boolean strike,float conf,String reason) {
+        if(strike) {
+            strikes++;
+            decision.setText("STRIKE"); decision.setTextColor(0xFF42F5A7);
+            if(strikes>=3){strikes=0;balls=0;outs=Math.min(3,outs+1);}
+        } else {
+            balls++;
+            decision.setText("BALL"); decision.setTextColor(0xFFFF6874);
+            if(balls>=4){balls=0;strikes=0;}
+        }
+        updateCounts(); status.setText(reason);
+        confidence.setText(String.format(java.util.Locale.US,"Decision confidence: %.0f%% · verify against calibrated footage",conf*100f));
+    }
+    private void updateCounts(){counts.setText("BALL  "+balls+"       STRIKE  "+strikes+"       OUT  "+outs);}
+    private Button button(String label,int color){Button b=new Button(this);b.setText(label);b.setTextColor(Color.WHITE);b.setTextSize(10);b.setAllCaps(false);b.setPadding(dp(2),0,dp(2),0);b.setBackgroundColor(color);
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(42),1);p.setMargins(dp(3),0,dp(3),0);b.setLayoutParams(p);return b;}
+    private TextView text(String s,int size,int color,boolean bold){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);if(bold)t.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD);return t;}
+    private int dp(int n){return (int)(n*getResources().getDisplayMetrics().density);}
+
+    @Override public void onRequestPermissionsResult(int requestCode,String[] permissions,int[] grantResults){super.onRequestPermissionsResult(requestCode,permissions,grantResults);
+        if(requestCode==CAMERA_PERMISSION&&grantResults.length>0&&grantResults[0]==PackageManager.PERMISSION_GRANTED)startCamera();
+        else status.setText("Camera permission required");}
+    @Override protected void onDestroy(){super.onDestroy();if(cameraExecutor!=null)cameraExecutor.shutdown();}
 }

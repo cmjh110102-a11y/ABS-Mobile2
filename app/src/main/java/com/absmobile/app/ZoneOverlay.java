@@ -7,14 +7,13 @@ import android.graphics.RectF;
 import android.view.MotionEvent;
 import android.view.View;
 
+/** Calibratable 2-D image-plane strike-zone overlay. */
 public class ZoneOverlay extends View {
-    public boolean calibration = false;
-
-    private final Paint paint = new Paint(3);
-    private final RectF zone = new RectF(0.39f, 0.28f, 0.61f, 0.70f);
-    private float downX;
-    private float downY;
-    private boolean moving = false;
+    public volatile boolean calibration = false;
+    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF zone = new RectF(0.39f, 0.29f, 0.61f, 0.69f);
+    private float lastX, lastY;
+    private boolean moving;
 
     public ZoneOverlay(Context context) {
         super(context);
@@ -26,57 +25,51 @@ public class ZoneOverlay extends View {
         invalidate();
     }
 
-    @Override
-    protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
-        float width = getWidth();
-        float height = getHeight();
-        RectF rect = new RectF(
-                zone.left * width,
-                zone.top * height,
-                zone.right * width,
-                zone.bottom * height);
-
-        paint.setColor(0xCC42F5A7);
-        paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(6);
-        canvas.drawRect(rect, paint);
+    /** Returns a defensive copy in normalized view coordinates. */
+    public synchronized RectF getZoneNormalized() {
+        return new RectF(zone);
     }
 
-    @Override
-    public boolean onTouchEvent(MotionEvent event) {
-        if (!calibration) {
-            return false;
-        }
+    @Override protected synchronized void onDraw(Canvas canvas) {
+        super.onDraw(canvas);
+        float w = getWidth(), h = getHeight();
+        RectF r = new RectF(zone.left * w, zone.top * h, zone.right * w, zone.bottom * h);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(0x183CF5A5);
+        canvas.drawRect(r, paint);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(calibration ? 5f : 3f);
+        paint.setColor(calibration ? 0xFFFFD166 : 0xDD42F5A7);
+        canvas.drawRect(r, paint);
+        paint.setStrokeWidth(1.5f);
+        paint.setColor(0x8842F5A7);
+        canvas.drawLine(r.centerX(), r.top, r.centerX(), r.bottom, paint);
+        canvas.drawLine(r.left, r.centerY(), r.right, r.centerY(), paint);
+    }
 
-        float x = event.getX() / getWidth();
-        float y = event.getY() / getHeight();
-
-        switch (event.getAction()) {
-            case MotionEvent.ACTION_DOWN:
-                downX = x;
-                downY = y;
-                moving = true;
-                break;
-            case MotionEvent.ACTION_MOVE:
-                if (moving) {
-                    float dx = x - downX;
-                    float dy = y - downY;
-                    zone.offset(dx, dy);
-                    zone.left = Math.max(0f, zone.left);
-                    zone.top = Math.max(0f, zone.top);
-                    zone.right = Math.min(1f, zone.right);
-                    zone.bottom = Math.min(1f, zone.bottom);
-                    downX = x;
-                    downY = y;
-                    invalidate();
-                }
-                break;
-            case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-                moving = false;
-                break;
+    @Override public boolean onTouchEvent(MotionEvent event) {
+        if (!calibration) return false;
+        float x = event.getX() / Math.max(1, getWidth());
+        float y = event.getY() / Math.max(1, getHeight());
+        synchronized (this) {
+            switch (event.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    lastX = x; lastY = y; moving = true; return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (moving) {
+                        float dx = x - lastX, dy = y - lastY;
+                        float width = zone.width(), height = zone.height();
+                        float left = Math.max(0f, Math.min(1f - width, zone.left + dx));
+                        float top = Math.max(0f, Math.min(1f - height, zone.top + dy));
+                        zone.set(left, top, left + width, top + height);
+                        lastX = x; lastY = y; invalidate();
+                    }
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    moving = false; return true;
+                default: return true;
+            }
         }
-        return true;
     }
 }

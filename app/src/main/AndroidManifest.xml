@@ -1,10 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <uses-permission android:name="android.permission.CAMERA" />
-
     <application
         android:allowBackup="false"
-        android:label="ABS Mobile"
+        android:label="ABS Mobile 0.3"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity
